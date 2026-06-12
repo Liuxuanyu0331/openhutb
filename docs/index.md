@@ -101,6 +101,7 @@ title: 主页
 
 [__carla_2d_deeprl__](./carla_2d_deeprl/README.md) - 基于 CARLA 的极简 2D 深度强化学习自动驾驶环境。
 
+[__自动驾驶车道检测与路径规划仿真平台__](./driveSim-enhanced/README.md)
 
 >>>>>>> a5a22248cdfe7cc50f7bc1c7f2151be66c6f7644
 
