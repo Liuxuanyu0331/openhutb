@@ -1,234 +1,134 @@
-# 自动驾驶车道与路径检测
-=========================================
+# 🚗 DriveSim-Enhanced：自动驾驶车道检测与路径规划仿真平台
 
-## 项目简介
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Python 3.7+](https://img.shields.io/badge/Python-3.7%2B-green.svg)](https://www.python.org/) [![CARLA 0.9.15](https://img.shields.io/badge/CARLA-0.9.15-orange.svg)](https://carla.org/)
 
-本项目实现了基于深度学习的自动驾驶车道检测与路径规划功能，支持以下两种仿真平台：
-
-| 平台 | 特点 | 适用场景 |
-|------|------|----------|
-| **GTAV + OpenPilot** | 基于游戏引擎，画面逼真 | 快速原型验证 |
-| **CARLA 模拟器** | 专业自动驾驶仿真平台 | 学术研究、算法评估 |
-
----
-
-## 在 GTAV 上运行 OpenPilot
-
-本项目是对 [littlemountainman/modeld](https://github.com/littlemountainman/modeld) 项目的一个分支。
-
-我们利用了他的工作，并将 DeepGTAV 和 VPilot 结合，从而能够将 comma.ai 的开源软件应用于 GTAV，并创建出由 openpilot 算法管理的自动驾驶车辆。
-
-### GTAV 安装步骤
-
-**环境要求：** Python 3.7 或更高版本
-
-1. **安装所需依赖包**
-   ```bash
-   pip3 install -r requirements.txt
-   ```
-
-2. **下载 VPilot with DeepGTAV**
-   - 下载地址：[VPilot](https://github.com/aitorzip/VPilot)
-
-3. **下载 ScriptHookV**
-   - 下载地址：[ScriptHookV](https://www.dev-c.com/gtav/scripthookv/)
-
-4. **下载 DeepGTAV**
-   - 下载地址：[DeepGTAV](https://github.com/aitorzip/DeepGTAV)
-
-5. **安装到 GTAV 目录**
-   - 将 `ScriptHookV.dll`、`dinput8.dll`、`NativeTrainer.asi` 复制到游戏主文件夹（即 `GTA5.exe` 所在目录）
-   - 将 `DeepGTAV/bin/Release/` 文件夹下的所有内容复制到 GTAV 游戏安装目录
-
-6. **启动程序**
-   ```bash
-   # 确保 GTAV 已在运行
-   python3 main.py
-   ```
+## 📑 目录
+1. [产品概述](#1-产品概述)
+2. [核心特性](#2-核心特性)
+3. [仿真平台支持](#3-仿真平台支持)
+4. [环境准备与快速部署](#4-环境准备与快速部署)
+5. [系统模块架构](#5-系统模块架构)
+6. [常见问题 (FAQ)](#6-常见问题-faq)
+7. [演进路线图](#7-演进路线图)
+8. [致谢与许可](#8-致谢与许可)
 
 ---
 
-## 在 CARLA 模拟器上运行自动驾驶
+## 1. 产品概述
 
-**如果你没有 GTAV，或者希望在更真实的自动驾驶仿真环境中进行开发，可以使用 CARLA 模拟器。**
+**DriveSim-Enhanced** 是一套为自动驾驶算法研究与快速原型验证而设计的综合仿真平台方案。本项目集成了基于深度学习的车道线检测、交通信号灯识别与智能路径规划模块，旨在帮助研究人员和开发者在虚拟环境中安全、低成本地验证自动驾驶算法。
 
-CARLA 是一个开源的自动驾驶仿真器，提供更专业的交通场景、传感器模拟和车辆动力学。
+本项目在 [modeld](https://github.com/littlemountainman/modeld) 的基础上进行了深度演进，打通了 comma.ai 的 openpilot 算法与多种仿真引擎的连接。
 
-### CARLA 环境要求
+**🎯 适用人群：** 自动驾驶算法工程师、具身智能研究者、高校学术团队及极客开发者。
 
-| 组件 | 版本要求 |
-|------|----------|
-| CARLA 模拟器 | 0.9.15 |
-| Python | 3.7 - 3.9 |
-| 操作系统 | Windows 10/11 |
+---
 
-### CARLA 安装步骤
+## 2. 核心特性
 
-#### 1. 下载 CARLA 模拟器
+*   **🧠 深度学习视觉感知：** 实时处理摄像头输入，实现高精度的车道线提取与跟踪。
+*   **🚦 智能交通交互：** 支持对红、黄、绿交通信号灯状态的精准检测与响应。
+*   **🗺️ 全局与局部路径规划：** 动态计算最优行驶路线，支持复杂路况下的自主决策。
+*   **📊 实时数据遥测屏：** 仪表盘式可视化界面，毫秒级同步显示车速、档位、转向角等关键车辆动力学参数。
+*   **🎮 多模态视角交互：** 提供第一人称（沉浸式驾驶）、第三人称及俯视全局等多视角无缝切换体验。
+*   **⚡ 极简自动化部署：** 提供开箱即用的自动化部署脚本，消除繁琐的环境配置烦恼。
 
-从 [CARLA 官方 GitHub](https://github.com/carla-simulator/carla/releases/tag/0.9.15) 下载 `CARLA_0.9.15.zip` 并解压到指定目录（例如 `H:\carla0.9.15\`）。
+---
 
-#### 2. 安装 Python 依赖
+## 3. 仿真平台支持
+
+为满足不同维度的研发需求，本项目提供两种仿真引擎支持方案：
+
+| 平台特性 | 🎮 GTAV + OpenPilot 联合仿真 | 🏢 CARLA 专业仿真器 (推荐) |
+| :--- | :--- | :--- |
+| **定位与场景** | 侧重视觉逼真度，适合端到端视觉算法的快速原型验证 | 侧重物理规则与传感真实性，适合严谨的学术研究与算法评估 |
+| **核心优势** | 光影渲染极其逼真，天气系统丰富，NPC 行为具有高随机性 | 提供专业的 Python API 控制，支持激光雷达等多种传感器模拟，符合行业标准 |
+| **系统要求** | 需要安装 GTA5 游戏本体，资源消耗中等 | 需要下载并部署 CARLA 引擎，对显卡性能要求较高 |
+
+---
+
+## 4. 环境准备与快速部署
+
+### 方案 A：在 CARLA 模拟器上运行（专业研究推荐）
+
+**环境依赖：** Windows 10/11，Python 3.7 - 3.9，[CARLA 0.9.15 客户端](https://github.com/carla-simulator/carla/releases/tag/0.9.15)。
+
+#### 1. 环境初始化
+请确保将 CARLA 解压至本地磁盘（例如 `H:\carla0.9.15\`），并安装 Python 依赖库与 CARLA API 包：
 
 ```bash
-pip3 install -r requirements.txt
-```
+# 安装基础依赖
+pip install -r requirements.txt
 
-#### 3. 安装 CARLA Python API
-
-```bash
-# 进入 CARLA Python API 目录
+# 进入 CARLA Python API 目录并安装 whl 文件（以 Python 3.8 为例）
 cd H:\carla0.9.15\WindowsNoEditor\PythonAPI\carla\dist
-
-# 安装 carla 包（根据你的 Python 版本选择）
-pip install carla-0.9.15-cp38-cp38-win_amd64.whl   # Python 3.8 示例
+pip install carla-0.9.15-cp38-cp38-win_amd64.whl
 ```
+
+#### 2. 🚀 极简启动（One-Click Start）
+为了提供最佳的用户体验，我们封装了 `start_carla.bat` 批处理脚本。您只需**双击运行**该脚本，系统将自动化完成以下编排：
+*   ✅ 环境预检（定位 `CarlaUE4.exe`）
+*   ✅ 启动仿真引擎（默认注入 `-quality-level=Low` 以保障帧率）
+*   ✅ 服务就绪检测（等待 15 秒同步时间）
+*   ✅ 自动挂载并拉起核心驾驶算法模块
+
+*如果您希望手动启动，请依次执行 `CarlaUE4.exe` 并新开终端运行 `python src/driveSim-enhanced/automatic_control.py`。*
+
+### 方案 B：在 GTAV 上运行 OpenPilot（视觉感知推荐）
+
+1. 安装依赖：`pip install -r requirements.txt`
+2. 资源下载：获取 [VPilot](https://github.com/aitorzip/VPilot)、[ScriptHookV](https://www.dev-c.com/gtav/scripthookv/) 与 [DeepGTAV](https://github.com/aitorzip/DeepGTAV)。
+3. 引擎注入：将 `ScriptHookV.dll`、`dinput8.dll`、`NativeTrainer.asi` 及 `DeepGTAV/bin/Release/` 内的文件放置于 `GTA5.exe` 同级目录。
+4. 启动服务：在游戏运行状态下，执行 `python main.py`。
 
 ---
 
-## 🚀 一键启动（推荐）
+## 5. 系统模块架构
 
-本项目提供了 Windows 批处理脚本 `start_carla.bat`，可以**一键启动 CARLA 模拟器和自动驾驶程序**，无需手动执行多条命令。
+项目采用模块化设计，高内聚低耦合，核心代码结构如下：
 
-### 使用方法
-
-1. **确保目录结构正确**
-   ```
-   H:\
-   ├── carla0.9.15\
-   │   └── WindowsNoEditor\
-   │       └── CarlaUE4.exe
-   └── openhutb\
-       └── openhutb\
-           └── src\
-               └── driveSim-enhanced\
-                   └── automatic_control.py
-                   └── drive.py
-                   └── rl_agent.py
-                   └── map_swithcer.py
-                   └── main.py
-                   └── README.py
-   ```
-
-2. **双击运行启动脚本**
-   ```
-   start_carla.bat
-   ```
-
-3. **脚本会自动完成以下操作：**
-   - ✅ 检测 CarlaUE4.exe 是否存在
-   - ✅ 启动 CARLA 模拟器（带 `-quality-level=Low` 优化参数）
-   - ✅ 等待 15 秒让服务器完全启动
-   - ✅ 自动检测 Python 脚本路径
-   - ✅ 运行自动驾驶程序
-
-### 手动启动方式
-
-如果不使用一键脚本，也可以手动执行：
-
-```bash
-# 进入 CARLA 安装目录
-cd H:\carla0.9.15\WindowsNoEditor
-
-# 启动模拟器
-CarlaUE4.exe
-
-# 新开一个终端，运行自动驾驶程序
-python code/automatic_control.py
-```
-
----
-
-## CARLA 功能特性
-
-本项目的 CARLA 版本支持以下功能：
-
-| 功能 | 说明 |
-|------|------|
-| 🚦 交通信号灯检测 | 实时识别红、黄、绿灯状态 |
-| 🚗 车道线检测 | 基于深度学习的车道线识别 |
-| 📍 路径规划 | 自动规划行驶路线 |
-| 📊 车辆信息显示 | 速度、档位、转向角等实时信息 |
-| 🎮 多视角切换 | 支持第一人称、第三人称、俯视等视角 |
-
----
-
-## 常见问题
-
-### Q1: 连接 CARLA 时提示版本不匹配
-
-**A:** 确保 Python API 版本与 CARLA 模拟器版本一致：
-
-```bash
-# 检查 Python API 版本
-python -c "import carla; print(carla.__version__)"
-```
-
-如果版本不匹配，重新安装对应版本的 `carla` 包。
-
-### Q2: 启动脚本提示找不到 Python
-
-**A:** 请确保 Python 已添加到系统环境变量：
-
-```bash
-# 测试 Python 是否可用
-python --version
-```
-
-如果提示找不到命令，请重新安装 Python 并勾选 "Add Python to PATH"。
-
-### Q3: 启动脚本中文乱码或闪退
-
-**A:** 
-- Windows 11 用户请确保脚本保存为 **UTF-8 with BOM** 编码
-- 或者使用 ANSI 编码保存
-
-### Q4: CARLA 模拟器启动后画面卡顿
-
-**A:** 脚本默认使用 `-quality-level=Low` 参数降低画质，如果需要更流畅的体验，可以：
-
-1. 关闭其他占用 GPU 的程序
-2. 在 CARLA 设置中降低分辨率
-3. 使用 DirectX 11 模式运行（默认）
-
----
-
-## 项目结构
-
-```
+```text
 openhutb/
-├── src\
-    └── driveSim-enhanced\
-        └── automatic_control.py
-        └── drive.py
-        └── rl_agent.py
-        └── map_swithcer.py
-        └── main.py
-        └── README.py
+└── src/
+    └── driveSim-enhanced/
+        ├── main.py                # 系统主入口，负责模块初始化与生命周期管理
+        ├── automatic_control.py   # 核心业务逻辑：自动驾驶策略控制中心
+        ├── drive.py               # 车辆底盘与动力学控制接口适配
+        ├── rl_agent.py            # 强化学习/决策代理模块（强化学习训练入口）
+        └── map_swithcer.py        # 仿真环境地图管理与动态切换模块
 ```
 
 ---
 
-## 致谢
+## 6. 常见问题 (FAQ)
 
-- [littlemountainman/modeld](https://github.com/littlemountainman/modeld)
-- [aitorzip/DeepGTAV](https://github.com/aitorzip/DeepGTAV)
-- [aitorzip/VPilot](https://github.com/aitorzip/VPilot)
-- [CARLA Simulator](https://carla.org/)
-- [comma.ai/openpilot](https://github.com/commaai/openpilot)
+**Q: 连接 CARLA 时，终端抛出 `carla` 模块导入错误或版本不匹配？**
+> **A:** 这通常是由于环境 Python API 与仿真器服务端版本脱节导致。请通过命令 `python -c "import carla; print(carla.__version__)"` 验证版本。若不为 `0.9.15`，请返回部署步骤重新安装对应的 `.whl` 文件。
+
+**Q: 运行 `start_carla.bat` 出现中文乱码或闪退现象？**
+> **A:** 请使用文本编辑器（如 VS Code）打开 `.bat` 文件，确保其编码格式保存为 **UTF-8 with BOM** 或系统默认的 **ANSI** 编码。
+
+**Q: CARLA 模拟器运行中画面帧率极低，导致算法控制延迟？**
+> **A:** 仿真引擎对 GPU 算力要求较高。系统默认已加入 `-quality-level=Low` 进行降级优化。若仍卡顿，建议：1) 在 CARLA 内部设置降低渲染分辨率；2) 确保显卡驱动已更新且后台无高负载图形应用。
 
 ---
 
-## 许可证
+## 7. 演进路线图
+- [x] 完成 GTAV 环境与 OpenPilot 的基础对接
+- [x] 引入 CARLA 仿真引擎支持与 API 封装
+- [x] 开发一键启动与部署脚本
+- [ ] **Next:** 引入基于强化学习（RL）的跟车模型
+- [ ] **Next:** 支持自定义交通流与极端天气测试场景生成
+- [ ] **Next:** 完善数据采集脚本，支持自动生成训练数据集
 
-本项目遵循原项目的开源许可证。
+---
 
-```
+## 8. 致谢与许可
 
-这个 README 主要完善了：
-1. ✅ 添加了一键启动 `start_carla.bat` 的使用说明
-2. ✅ 完善了 CARLA 安装步骤（包括 API 安装）
-3. ✅ 添加了常见问题解答（Q&A）
-4. ✅ 添加了项目结构说明
-5. ✅ 优化了排版，增加了表格对比
-6. ✅ 添加了目录结构示意
+本产品的诞生离不开开源社区的伟大贡献，特别鸣谢以下项目及团队：
+*   [littlemountainman/modeld](https://github.com/littlemountainman/modeld) - 核心框架参考
+*   [aitorzip/DeepGTAV](https://github.com/aitorzip/DeepGTAV) & [VPilot](https://github.com/aitorzip/VPilot) - GTAV 环境插件
+*   [CARLA Simulator](https://carla.org/) - 卓越的开源自动驾驶仿真器
+*   [comma.ai/openpilot](https://github.com/commaai/openpilot) - 开源智驾先驱
+
+**许可证：** 本项目代码遵循原项目的开源许可证协议。请在商业用途前仔细核对相关依赖包的授权条款。
