@@ -52,8 +52,11 @@ except ImportError:
 # -- Find CARLA module ---------------------------------------------------------
 # ==============================================================================
 
-# 添加 CARLA Python API 路径（使用你的本地路径）
-carla_base = 'H:/carla0.9.15/WindowsNoEditor/PythonAPI/carla'
+# 添加 CARLA Python API 路径（优先读取环境变量 CARLA_ROOT，否则使用默认路径）
+_CARLA_ROOT_DEFAULT = 'H:/carla0.9.15/WindowsNoEditor/PythonAPI/carla'
+carla_base = os.environ.get('CARLA_ROOT', _CARLA_ROOT_DEFAULT)
+if carla_base == _CARLA_ROOT_DEFAULT:
+    print(f"⚠ 未设置 CARLA_ROOT 环境变量，使用默认路径: {_CARLA_ROOT_DEFAULT}")
 egg_dir = os.path.join(carla_base, 'dist')
 
 # 添加 egg 文件
@@ -155,6 +158,19 @@ class AssistedDrivingSystem:
         self.takeover_distance = 30.0
         self.safe_distance = 40.0
 
+        # 检测参数（命名常量，避免魔法数字）
+        self.FORWARD_FOV_COS = 0.707    # 对应前方 ±45° 视野（cos45°）
+        self.MIN_SAFE_DIST = 1.0        # 忽略过近的 actor（自身碰撞箱）
+        self.SAFE_MARGIN_EXTRA = 0.8    # 车道安全余量（米）
+        self.STEER_BASE_FAR = 0.8       # 距离较远时的转向量
+        self.STEER_BASE_NEAR = 1.0      # 距离较近时的转向量
+        self.STEER_NEAR_THRESHOLD = 15  # 近距阈值（米）
+        self.EMERGENCY_STEER = 0.6      # 紧急制动时的转向量
+        self.BRAKE_MIN = 0.2            # 辅助制动最小值
+        self.BRAKE_MAX = 0.8            # 辅助制动最大值
+        self.ASSIST_THROTTLE = 0.1      # 辅助接管时维持的油门量
+        self.ACTOR_CACHE_FRAMES = 10    # actor 列表缓存帧数
+
         # 状态机
         self.is_taking_over = False
         self.takeover_start_time = 0
@@ -162,12 +178,17 @@ class AssistedDrivingSystem:
         self.avoidance_direction = 0
         self.avoidance_phase = "none"
 
+        # actor 列表缓存
+        self._cached_actors = []
+        self._cache_frame = -1
+
         # 控制平滑
         self.current_steer = 0.0
         self.steer_smooth = 0.3
 
         # 调试
         self._debug_print = True
+
 
     def toggle(self):
         self.enabled = not self.enabled
@@ -184,8 +205,7 @@ class AssistedDrivingSystem:
         return self.obstacle_avoidance_enabled
 
     def get_dynamic_distance(self):
-        v = self.vehicle.get_velocity()
-        speed = 3.6 * math.sqrt(v.x**2 + v.y**2 + v.z**2)
+        speed = get_speed_kmh(self.vehicle)
         if speed > 70:
             return 50.0
         elif speed > 40:
@@ -194,56 +214,76 @@ class AssistedDrivingSystem:
             return 30.0
 
     def get_front_obstacle(self):
-        """检测前方障碍物，返回 (距离, 角度, actor)"""
+        """检测前方障碍物，返回 (距离, 角度, actor)。
+
+        优化：
+        - actor 列表按帧缓存，减少 get_actors() 调用
+        - 优先只查询 vehicle/walker，静态障碍物使用宽松过滤
+        - 用 numpy 向量化批量距离/点积计算
+        """
         vehicle_transform = self.vehicle.get_transform()
         veh_loc = vehicle_transform.location
         forward = vehicle_transform.get_forward_vector()
         right = vehicle_transform.get_right_vector()
 
         check_dist = self.get_dynamic_distance()
+        vehicle_half_w = self.vehicle.bounding_box.extent.y
+
+        # ---------- actor 列表帧缓存 ----------
+        snapshot = self.world.get_snapshot()
+        cur_frame = snapshot.timestamp.frame if snapshot else -1
+        if cur_frame < 0 or cur_frame - self._cache_frame >= self.ACTOR_CACHE_FRAMES:
+            vehicles = list(self.world.get_actors().filter('vehicle.*'))
+            walkers = list(self.world.get_actors().filter('walker.*'))
+            self._cached_actors = [a for a in vehicles + walkers if a.id != self.vehicle.id]
+            self._cache_frame = cur_frame
+
+        candidates = self._cached_actors
+
+        if not candidates:
+            return check_dist, 0.0, None
+
+        # ---------- numpy 向量化距离/方向计算 ----------
+        locs = np.array([[a.get_location().x, a.get_location().y] for a in candidates])
+        veh_xy = np.array([veh_loc.x, veh_loc.y])
+        fwd_xy = np.array([forward.x, forward.y])
+        rgt_xy = np.array([right.x, right.y])
+
+        delta = locs - veh_xy                          # (N, 2)
+        dists = np.linalg.norm(delta, axis=1)          # (N,)
+
+        # 过滤：距离范围
+        mask = (dists >= self.MIN_SAFE_DIST) & (dists <= check_dist)
+        if not mask.any():
+            return check_dist, 0.0, None
+
+        delta, dists, candidates_f = delta[mask], dists[mask], [candidates[i] for i in np.where(mask)[0]]
+
+        # 过滤：前方视野
+        fwd_dot = (delta * fwd_xy).sum(axis=1) / dists
+        mask2 = fwd_dot >= self.FORWARD_FOV_COS
+        if not mask2.any():
+            return check_dist, 0.0, None
+
+        delta, dists, candidates_f = delta[mask2], dists[mask2], [candidates_f[i] for i in np.where(mask2)[0]]
+        rgt_dot = np.clip((delta * rgt_xy).sum(axis=1) / dists, -1.0, 1.0)
+        angles = np.degrees(np.arcsin(rgt_dot))        # (N,)
+        lateral = np.abs(dists * np.sin(np.radians(angles)))
+
         min_dist = check_dist
         min_angle = 0.0
         hit_actor = None
 
-        # 获取所有 actors 并过滤（修复 ActorList 相加错误）
-        all_actors = self.world.get_actors()
-        for actor in all_actors:
-            if actor.id == self.vehicle.id:
-                continue
-            # 过滤类型
-            actor_type = actor.type_id.lower()
-            if not any(x in actor_type for x in
-                       ['vehicle', 'walker', 'static', 'building', 'pole', 'tree', 'wall', 'barrier']):
-                continue
-
-            loc = actor.get_location()
-            dx = loc.x - veh_loc.x
-            dy = loc.y - veh_loc.y
-            dist = math.sqrt(dx*dx + dy*dy)
-            if dist > check_dist or dist < 1.0:
-                continue
-
-            forward_dot = (dx*forward.x + dy*forward.y) / dist
-            if forward_dot < 0.707:  # 前方140度视野
-                continue
-
-            right_dot = (dx*right.x + dy*right.y) / dist
-            angle = math.degrees(math.asin(max(-1.0, min(1.0, right_dot))))
-
-            # 考虑障碍物宽度
-            bbox_extent = 1.0
-            if hasattr(actor, 'bounding_box'):
-                bbox_extent = actor.bounding_box.extent.y
-
-            lateral_offset = abs(dist * math.sin(math.radians(angle)))
-            safe_margin = self.vehicle.bounding_box.extent.y + bbox_extent + 0.8
-
-            if lateral_offset < safe_margin and dist < min_dist:
+        for i, (actor, dist, angle, lat) in enumerate(zip(candidates_f, dists, angles, lateral)):
+            bbox_extent = actor.bounding_box.extent.y if hasattr(actor, 'bounding_box') else 1.0
+            safe_margin = vehicle_half_w + bbox_extent + self.SAFE_MARGIN_EXTRA
+            if lat < safe_margin and dist < min_dist:
                 min_dist = dist
                 min_angle = angle
                 hit_actor = actor
 
         return min_dist, min_angle, hit_actor
+
 
     def check_side_space(self, direction):
         """检查侧向是否有车道空间（基于waypoint）"""
@@ -256,7 +296,7 @@ class AssistedDrivingSystem:
             else:
                 right = waypoint.get_right_lane()
                 return right is not None and right.lane_type == carla.LaneType.Driving
-        except:
+        except Exception:
             return True  # 默认安全
 
     def decide_direction(self, obstacle_angle):
@@ -318,17 +358,17 @@ class AssistedDrivingSystem:
             if emergency:
                 control.brake = 1.0
                 control.throttle = 0.0
-                control.steer = self.avoidance_direction * 0.6
+                control.steer = self.avoidance_direction * self.EMERGENCY_STEER
                 self.hud.notification("EMERGENCY BRAKE!", seconds=0.3, color=(255, 0, 0))
             else:
-                brake_ratio = 1.0 - (distance - self.emergency_brake_distance) / (self.takeover_distance - self.emergency_brake_distance)
-                brake_ratio = max(0.2, min(0.8, brake_ratio))
+                brake_ratio = 1.0 - (distance - self.emergency_brake_distance) / (
+                    self.takeover_distance - self.emergency_brake_distance)
+                brake_ratio = max(self.BRAKE_MIN, min(self.BRAKE_MAX, brake_ratio))
                 control.brake = brake_ratio
-                control.throttle = 0.1
+                control.throttle = self.ASSIST_THROTTLE
 
-                base_steer = 0.8
-                if distance < 15:
-                    base_steer = 1.0
+                base_steer = (self.STEER_BASE_NEAR if distance < self.STEER_NEAR_THRESHOLD
+                              else self.STEER_BASE_FAR)
                 target_steer = self.avoidance_direction * base_steer
 
                 self.current_steer += (target_steer - self.current_steer) * self.steer_smooth
@@ -368,6 +408,11 @@ def get_actor_display_name(actor, truncate=250):
     name = ' '.join(actor.type_id.replace('_', '.').title().split('.')[1:])
     return (name[:truncate - 1] + u'\u2026') if len(name) > truncate else name
 
+
+def get_speed_kmh(actor):
+    """返回 actor 的当前速度（km/h）。消除文件中多处重复的速度计算。"""
+    v = actor.get_velocity()
+    return 3.6 * math.sqrt(v.x ** 2 + v.y ** 2 + v.z ** 2)
 
 # ==============================================================================
 # -- World ---------------------------------------------------------------
@@ -554,20 +599,19 @@ class HUD(object):
         if not self._show_info:
             return
         transform = world.player.get_transform()
-        vel = world.player.get_velocity()
         control = world.player.get_control()
 
-        speed = 3.6 * math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2)
+        speed = get_speed_kmh(world.player)
 
-        heading = ''
-        if abs(transform.rotation.yaw) < 89.5:
-            heading += '北'
-        if abs(transform.rotation.yaw) > 90.5:
-            heading += '南'
-        if 179.5 > transform.rotation.yaw > 0.5:
-            heading += '东'
-        if -0.5 > transform.rotation.yaw > -179.5:
-            heading += '西'
+        yaw = transform.rotation.yaw
+        if -45 < yaw <= 45:
+            heading = '北'
+        elif 45 < yaw <= 135:
+            heading = '东'
+        elif yaw > 135 or yaw <= -135:
+            heading = '南'
+        else:
+            heading = '西'
 
         colhist = world.collision_sensor.get_collision_history()
         collision = [colhist[x + self.frame - 200] for x in range(0, 200)]
@@ -590,13 +634,7 @@ class HUD(object):
 
         obstacle_info = ""
         if world.assisted_driving and world.assisted_driving.enabled:
-            result = world.assisted_driving.detect_obstacles()
-            if len(result) == 4:
-                distance, angle, emergency, obs_type = result
-            elif len(result) == 3:
-                distance, angle, emergency = result
-            else:
-                distance, angle, emergency = 20.0, 0, False
+            distance, angle, emergency, obs_type = world.assisted_driving.detect_obstacles()
             if distance < 15:
                 obstacle_info = f" | 障碍物: {distance:.1f}m"
 
@@ -640,11 +678,14 @@ class HUD(object):
         if len(vehicles) > 1:
             self._info_text += ['Nearby vehicles:']
 
-        def dist(l):
-            return math.sqrt((l.x - transform.location.x) ** 2 + (l.y - transform.location.y)
-                             ** 2 + (l.z - transform.location.z) ** 2)
+        def _calc_dist(loc):
+            """计算 loc 到玩家车辆的欧氏距离（米）。"""
+            return math.sqrt(
+                (loc.x - transform.location.x) ** 2 +
+                (loc.y - transform.location.y) ** 2 +
+                (loc.z - transform.location.z) ** 2)
 
-        vehicles = [(dist(x.get_location()), x) for x in vehicles if x.id != world.player.id]
+        vehicles = [(_calc_dist(x.get_location()), x) for x in vehicles if x.id != world.player.id]
 
         for dist_val, vehicle in sorted(vehicles):
             if dist_val > 200.0:
@@ -1018,6 +1059,120 @@ class CameraManager(object):
 
 
 # ==============================================================================
+# -- Game Loop Helpers ---------------------------------------------------------
+# ==============================================================================
+
+def _manual_control(world, keys, reverse_pressed):
+    """手动驾驶：根据按键状态生成 VehicleControl，并经辅助驾驶系统过滤后返回。"""
+    control = carla.VehicleControl()
+    control.throttle = 0.0
+    control.steer = 0.0
+    control.brake = 0.0
+    control.reverse = False
+
+    if reverse_pressed:
+        control.reverse = True
+        if keys[K_UP] or keys[K_w]:
+            control.throttle = 0.5
+        elif keys[K_DOWN] or keys[K_s]:
+            control.brake = 0.5
+        else:
+            control.throttle = 0.3
+        if keys[K_LEFT] or keys[K_a]:
+            control.steer = -0.5
+        if keys[K_RIGHT] or keys[K_d]:
+            control.steer = 0.5
+    else:
+        if keys[K_UP] or keys[K_w]:
+            control.throttle = 0.7
+        if keys[K_DOWN] or keys[K_s]:
+            control.brake = 0.7
+        if keys[K_LEFT] or keys[K_a]:
+            control.steer = -0.5
+        if keys[K_RIGHT] or keys[K_d]:
+            control.steer = 0.5
+
+    if world.assisted_driving:
+        control = world.assisted_driving.apply_assistance(control)
+
+    return control
+
+
+def _autopilot_control(world, agent, args, spawn_points, num_min_waypoints, tot_target_reached):
+    """BehaviorAgent 自动驾驶一帧：检查路线、应用速度限制、障碍物紧急制动。
+
+    Returns:
+        (control, tot_target_reached, should_break) — control 为 None 表示无需 apply，
+        should_break 为 True 表示任务已完成应退出主循环。
+    """
+    local_planner = agent.get_local_planner()
+    if hasattr(local_planner, '_waypoints_queue'):
+        waypoints_len = len(local_planner._waypoints_queue)
+    elif hasattr(local_planner, 'waypoints_queue'):
+        waypoints_len = len(local_planner.waypoints_queue)
+    else:
+        waypoints_len = 0
+
+    if waypoints_len < num_min_waypoints and args.loop and spawn_points:
+        agent.reroute(spawn_points)
+        tot_target_reached += 1
+        world.hud.notification(f"Target reached x{tot_target_reached}", seconds=4.0)
+    elif waypoints_len == 0 and not args.loop:
+        print("Target reached, mission accomplished...")
+        return None, tot_target_reached, True
+
+    speed_limit = world.player.get_speed_limit()
+    agent.get_local_planner().set_speed(speed_limit)
+    control = agent.run_step()
+
+    # 辅助避障：检测到近距障碍物时强制制动
+    if world.assisted_driving and world.assisted_driving.obstacle_avoidance_enabled:
+        distance, _angle, emergency, _obs_type = world.assisted_driving.detect_obstacles()
+        if distance < 8.0:
+            if distance < 5.0 or emergency:
+                control.brake = 1.0
+                control.throttle = 0.0
+
+    return control, tot_target_reached, False
+
+
+def _end_rl_episode(world, rl_agent, rl_episode_count, hud, args):
+    """处理 RL episode 结束：打印统计、定期保存检查点、重置环境、随机化目标。
+
+    Returns:
+        (rl_episode_count, should_break) — should_break 为 True 时训练已达目标轮数。
+    """
+    rl_episode_count += 1
+
+    if isinstance(rl_agent, PPOAgent):
+        rl_agent.update()
+
+    # 定期保存检查点
+    if rl_episode_count % 100 == 0:
+        os.makedirs("./rl_checkpoints", exist_ok=True)
+        save_path = f"./rl_checkpoints/episode_{rl_episode_count}.pth"
+        rl_agent.save(save_path)
+        hud.notification(f"Checkpoint saved: Ep {rl_episode_count}", seconds=2.0)
+
+    total_episodes = getattr(args, 'rl_episodes', 1000)
+    if rl_episode_count >= total_episodes:
+        hud.notification("Training Complete!", seconds=5.0, color=(0, 255, 0))
+        os.makedirs("./rl_checkpoints", exist_ok=True)
+        rl_agent.save("./rl_checkpoints/final_model.pth")
+        return rl_episode_count, True
+
+    # 重置环境并随机化目标
+    world.rl_env.reset()
+    spawn_points = world.map.get_spawn_points()
+    if spawn_points:
+        world.player.set_transform(random.choice(spawn_points))
+        target_point = random.choice(spawn_points)
+        world.rl_env.set_target(target_point.location)
+
+    return rl_episode_count, False
+
+
+# ==============================================================================
 # -- Game Loop ---------------------------------------------------------
 # ==============================================================================
 
@@ -1151,8 +1306,7 @@ def game_loop(args):
                 world.render(display)
                 pygame.display.flip()
                 if i % 10 == 0:
-                    vel = world.player.get_velocity()
-                    speed = 3.6 * math.sqrt(vel.x ** 2 + vel.y ** 2 + vel.z ** 2)
+                    speed = get_speed_kmh(world.player)
                     print(f"Test step {i}: speed={speed:.2f} km/h")
             print("Test complete.")
 
@@ -1225,33 +1379,13 @@ def game_loop(args):
                         world.rl_agent.store_transition(state, action, log_prob, reward, done, value)
 
                     if done or rl_step_count >= getattr(args, 'rl_max_steps', 2000):
-                        if isinstance(world.rl_agent, PPOAgent):
-                            loss = world.rl_agent.update()
-
-                        rl_episode_count += 1
-                        print(f"Episode {rl_episode_count} | Reward: {rl_episode_reward:.2f} | Steps: {rl_step_count}")
-
-                        if rl_episode_count % 100 == 0:
-                            save_path = f"./rl_checkpoints/episode_{rl_episode_count}.pth"
-                            world.rl_agent.save(save_path)
-                            hud.notification(f"Checkpoint saved: Ep {rl_episode_count}", seconds=2.0)
-
-                        total_episodes = getattr(args, 'rl_episodes', 1000)
-                        if rl_episode_count >= total_episodes:
-                            hud.notification("Training Complete!", seconds=5.0, color=(0, 255, 0))
-                            final_path = "./rl_checkpoints/final_model.pth"
-                            world.rl_agent.save(final_path)
+                        print(f"Episode {rl_episode_count + 1} | Reward: {rl_episode_reward:.2f} | Steps: {rl_step_count}")
+                        rl_episode_count, should_break = _end_rl_episode(
+                            world, world.rl_agent, rl_episode_count, hud, args)
+                        if should_break:
                             break
-
                         rl_episode_reward = 0
                         rl_step_count = 0
-                        world.rl_env.reset()
-
-                        spawn_points = world.map.get_spawn_points()
-                        if spawn_points:
-                            world.player.set_transform(random.choice(spawn_points))
-                            target_point = random.choice(spawn_points)
-                            world.rl_env.set_target(target_point.location)
 
                 else:
                     state = world.rl_env.get_state()
@@ -1288,14 +1422,14 @@ def game_loop(args):
 
                     world.player.apply_control(control)
 
-                    speed = 3.6 * math.sqrt(world.player.get_velocity().x**2 + world.player.get_velocity().y**2)
+                    speed = get_speed_kmh(world.player)
                     if hasattr(world.rl_env, 'target_location') and world.rl_env.target_location:
                         dist = world.player.get_location().distance(world.rl_env.target_location)
                         hud.notification(f"RL | Speed: {speed:.0f} | Target: {dist:.1f}m",
                                          seconds=0.1, color=(200, 200, 255))
 
             else:
-                # 原有的手动/自动模式代码保持不变
+                # 手动 / 自动驾驶模式
                 if args.agent == "Roaming" or args.agent == "Basic":
                     world.world.wait_for_tick(10.0)
                     world.tick(clock)
@@ -1312,65 +1446,12 @@ def game_loop(args):
                     pygame.display.flip()
 
                     if autopilot_enabled:
-                        local_planner = agent.get_local_planner()
-                        if hasattr(local_planner, '_waypoints_queue'):
-                            waypoints_len = len(local_planner._waypoints_queue)
-                        elif hasattr(local_planner, 'waypoints_queue'):
-                            waypoints_len = len(local_planner.waypoints_queue)
-                        else:
-                            waypoints_len = 0
-
-                        if waypoints_len < num_min_waypoints and args.loop and spawn_points:
-                            agent.reroute(spawn_points)
-                            tot_target_reached += 1
-                            world.hud.notification(f"Target reached x{tot_target_reached}", seconds=4.0)
-                        elif waypoints_len == 0 and not args.loop:
-                            print("Target reached, mission accomplished...")
+                        control, tot_target_reached, should_break = _autopilot_control(
+                            world, agent, args, spawn_points, num_min_waypoints, tot_target_reached)
+                        if should_break:
                             break
-
-                        speed_limit = world.player.get_speed_limit()
-                        agent.get_local_planner().set_speed(speed_limit)
-                        control = agent.run_step()
-
-                        if world.assisted_driving and world.assisted_driving.obstacle_avoidance_enabled:
-                            result = world.assisted_driving.detect_obstacles()
-                            if len(result) >= 3:
-                                distance, angle, emergency = result[0], result[1], result[2]
-                                if distance < 8.0:
-                                    if distance < 5.0 or emergency:
-                                        control.brake = 1.0
-                                        control.throttle = 0.0
                     else:
-                        control = carla.VehicleControl()
-                        control.throttle = 0.0
-                        control.steer = 0.0
-                        control.brake = 0.0
-                        control.reverse = False
-
-                        if reverse_pressed:
-                            control.reverse = True
-                            if keys[K_UP] or keys[K_w]:
-                                control.throttle = 0.5
-                            elif keys[K_DOWN] or keys[K_s]:
-                                control.brake = 0.5
-                            else:
-                                control.throttle = 0.3
-                            if keys[K_LEFT] or keys[K_a]:
-                                control.steer = -0.5
-                            if keys[K_RIGHT] or keys[K_d]:
-                                control.steer = 0.5
-                        else:
-                            if keys[K_UP] or keys[K_w]:
-                                control.throttle = 0.7
-                            if keys[K_DOWN] or keys[K_s]:
-                                control.brake = 0.7
-                            if keys[K_LEFT] or keys[K_a]:
-                                control.steer = -0.5
-                            if keys[K_RIGHT] or keys[K_d]:
-                                control.steer = 0.5
-
-                        if world.assisted_driving:
-                            control = world.assisted_driving.apply_assistance(control)
+                        control = _manual_control(world, keys, reverse_pressed)
 
                     world.player.apply_control(control)
 
